@@ -4,18 +4,51 @@ import os
 import torch
 
 from diffusers import (
+    AutoencoderKLCogVideoX,
+    CogVideoXTransformer3DModel,
     CogVideoXImageToVideoPipeline,
 )
 from diffusers.utils import export_to_video, load_image
+from transformers import T5EncoderModel
+from torchao.quantization import quantize_, int8_weight_only
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 from openai import OpenAI
 
 
-pipe = CogVideoXImageToVideoPipeline.from_pretrained(
-    "THUDM/CogVideoX-5b-I2V", torch_dtype=torch.bfloat16
-)
+def get_model(quantized):
+    if quantized:
+        quantization = int8_weight_only
+        text_encoder = T5EncoderModel.from_pretrained(
+            "THUDM/CogVideoX-5b-I2V", subfolder="text_encoder", torch_dtype=torch.bfloat16
+        )
+        quantize_(text_encoder, quantization())
+        transformer = CogVideoXTransformer3DModel.from_pretrained(
+            "THUDM/CogVideoX-5b-I2V", subfolder="transformer", torch_dtype=torch.bfloat16
+        )
+        quantize_(transformer, quantization())
+        vae = AutoencoderKLCogVideoX.from_pretrained(
+            "THUDM/CogVideoX-5b-I2V", subfolder="vae", torch_dtype=torch.bfloat16
+        )
+        quantize_(vae, quantization())
+        pipe = CogVideoXImageToVideoPipeline.from_pretrained(
+            "THUDM/CogVideoX-5b-I2V",
+            text_encoder=text_encoder,
+            transformer=transformer,
+            vae=vae,
+            torch_dtype=torch.bfloat16,
+        )
 
-pipe.enable_sequential_cpu_offload()
+        pipe.enable_model_cpu_offload()
+        pipe.vae.enable_tiling()
+        pipe.vae.enable_slicing()
+    else:
+        pipe = CogVideoXImageToVideoPipeline.from_pretrained(
+            "THUDM/CogVideoX-5b-I2V", torch_dtype=torch.bfloat16
+        )
+
+        pipe.enable_sequential_cpu_offload()
+
+    return pipe
 
 
 def get_last_frame(last_video_path, output_path):
@@ -83,8 +116,16 @@ if __name__ == "__main__":
     parser.add_argument("prompt", type=str, help="The text prompt for video generation")
     parser.add_argument("loop_size", type=str, help="The number of loops")
     parser.add_argument("directory", type=str, help="Output directory")
-    parser.add_argument("--fps", type=str, default=8, help="output video frames per second")
+    parser.add_argument("-q", action="store_true", help="Run quantized model")
+    parser.add_argument(
+        "--llm", action="store_true", help="use a llm to create a more dynamic video"
+    )
+    parser.add_argument(
+        "--fps", type=str, default=8, help="output video frames per second"
+    )
     args = parser.parse_args()
+
+    pipe = get_model(args.q)
 
     if not os.path.isdir(args.directory):
         os.mkdir(args.directory)
