@@ -20,15 +20,17 @@ def get_model(quantized):
         quantization = int8_weight_only
         text_encoder = T5EncoderModel.from_pretrained(
             "THUDM/CogVideoX-5b-I2V", subfolder="text_encoder", torch_dtype=torch.bfloat16
-        )
+        ).to("cuda")
         quantize_(text_encoder, quantization())
         transformer = CogVideoXTransformer3DModel.from_pretrained(
-            "THUDM/CogVideoX-5b-I2V", subfolder="transformer", torch_dtype=torch.bfloat16
-        )
+            "THUDM/CogVideoX-5b-I2V",
+            subfolder="transformer",
+            torch_dtype=torch.bfloat16,
+        ).to("cuda")
         quantize_(transformer, quantization())
         vae = AutoencoderKLCogVideoX.from_pretrained(
             "THUDM/CogVideoX-5b-I2V", subfolder="vae", torch_dtype=torch.bfloat16
-        )
+        ).to("cuda")
         quantize_(vae, quantization())
         pipe = CogVideoXImageToVideoPipeline.from_pretrained(
             "THUDM/CogVideoX-5b-I2V",
@@ -36,7 +38,7 @@ def get_model(quantized):
             transformer=transformer,
             vae=vae,
             torch_dtype=torch.bfloat16,
-        )
+        ).to("cuda")
 
         pipe.enable_model_cpu_offload()
         pipe.vae.enable_tiling()
