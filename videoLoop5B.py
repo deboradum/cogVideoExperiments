@@ -7,6 +7,7 @@ from diffusers import (
     AutoencoderKLCogVideoX,
     CogVideoXTransformer3DModel,
     CogVideoXImageToVideoPipeline,
+    CogVideoXPipeline,
 )
 from diffusers.utils import export_to_video, load_image
 from transformers import T5EncoderModel
@@ -17,9 +18,12 @@ from openai import OpenAI
 
 def get_model(quantized):
     if quantized:
+        # Quantized currently not working.
         quantization = int8_weight_only
         text_encoder = T5EncoderModel.from_pretrained(
-            "THUDM/CogVideoX-5b-I2V", subfolder="text_encoder", torch_dtype=torch.bfloat16
+            "THUDM/CogVideoX-5b-I2V",
+            subfolder="text_encoder",
+            torch_dtype=torch.bfloat16,
         ).to("cuda")
         quantize_(text_encoder, quantization())
         transformer = CogVideoXTransformer3DModel.from_pretrained(
@@ -63,14 +67,29 @@ def get_last_frame(last_video_path, output_path):
 
 
 def generate_video(prompt, img_path, path, fps=8):
-    img = load_image(img_path)
-    video = pipe(
-        image=img,
-        prompt=prompt,
-        guidance_scale=6,
-        use_dynamic_cfg=True,
-        num_inference_steps=50,
-    ).frames[0]
+    if img_path is None:
+        p = CogVideoXPipeline.from_pretrained(
+            "THUDM/CogVideoX-2b", torch_dtype=torch.bfloat16
+        )
+        p.enable_model_cpu_offload()
+        video = p(
+            prompt=prompt,
+            num_videos_per_prompt=1,
+            num_inference_steps=50,
+            num_frames=49,
+            guidance_scale=6,
+            generator=torch.Generator(device="cuda"),
+        ).frames[0]
+        del p
+    else:
+        img = load_image(img_path)
+        video = pipe(
+            image=img,
+            prompt=prompt,
+            guidance_scale=6,
+            use_dynamic_cfg=True,
+            num_inference_steps=50,
+        ).frames[0]
     export_to_video(video, path, fps=fps)
 
 
@@ -83,29 +102,33 @@ def concat_videos(paths, output_video_path):
         clip.close()
 
 
-def generate_new_prompt(old_prompts):
-    sys_prompt = """I have multiple prompts used to generate short videos. In the end,
-    I want to concatenate all these short videos to make a long video. The main
-    goals of the long video is to show many things. Your task is to create a new
-    prompt for the video to continue. Make sure the changes in the scene are
-    gradual, but that the scene over time is changing. Make sure to only respond
-    with the new prompt, do not say or tell me anything else."""
+def generate_new_prompt(prompt_progression):
+    # Adapted prompt from https://github.com/THUDM/CogView3/blob/main/prompt_optimize.py
+    sys_prompt = """
+    You are part of a team of bots that creates images . You work with an assistant bot that will draw anything you say.
+    For example , outputting " a beautiful morning in the woods with the sun peaking through the trees " will trigger your partner bot to output a video of a forest morning , as described.
+    You will be prompted by people looking to create detailed , amazing short form videos. The way to accomplish this is to take their short prompts and make them extremely detailed and descriptive.
+    The end goal is to create a long video, so the short videos should build on each other in order to for a longer form video.
+    There are a few rules to follow :
+    - Prompt should always be written in English, regardless of the input language. Please provide the prompts in English.
+    - You will only ever output a single video description per user request.
+    - Video descriptions must be detailed and specific, including keyword categories such as subject, medium, style, additional details, color, and lighting.
+    - When generating descriptions, focus on portraying the visual elements rather than delving into abstract psychological and emotional aspects. Provide clear and concise details that vividly depict the scene and its composition, capturing the tangible elements that make up the setting.
+    - Make sure the subsequent descriptions build on top of each other, but do not go too rapidly into new ideas.
+    - Do not provide the process and explanation, just return the modified English description . Image descriptions must be between 100-200 words. Extra words will be ignored.
+    """
 
-    prev_prompts = " - ".join(old_prompts)
+    history = [
+        {
+            "role": "system",
+            "content": sys_prompt,
+        },
+    ] + prompt_progression
 
     client = OpenAI()
     completion = client.chat.completions.create(
         model="gpt-4o-mini",
-        messages=[
-            {
-                "role": "system",
-                "content": sys_prompt,
-            },
-            {
-                "role": "user",
-                "content": prev_prompts,
-            },
-        ],
+        messages=history,
     )
 
     new_prompt = completion.choices[0].message.content
@@ -133,6 +156,8 @@ if __name__ == "__main__":
         os.mkdir(args.directory)
 
     video_paths = []
+    prompt_progression = []
+    prompt = args.prompt
     last_frame_path = None
     for i in range(int(args.loop_size)):
         video_path = f"{args.directory}/{i}.mp4"
@@ -141,9 +166,17 @@ if __name__ == "__main__":
         # Skip video generation if it already exists.
         if os.path.isfile(video_path):
             continue
-        generate_video(args.prompt, last_frame_path, video_path, float(args.fps))
+        generate_video(prompt, last_frame_path, video_path, float(args.fps))
 
         last_frame_path = f"{args.directory}/{i}.jpg"
         get_last_frame(video_path, last_frame_path)
+
+        if args.llm:
+            new_prompt = generate_new_prompt(prompt_progression)
+            prompt_progression.append({"role": "user", "content": prompt})
+            prompt_progression.append({"role": "assistant", "content": new_prompt})
+            prompt = new_prompt
+            # Only keep last 5 prompt progressions
+            prompt_progression = prompt_progression[-10:]
 
     concat_videos(video_paths, f"{args.directory}/final.mp4")
