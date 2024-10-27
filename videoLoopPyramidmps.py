@@ -17,7 +17,8 @@ def get_model(quantized):
     model_path = '../pyramidFLowModel'
     snapshot_download("rain1011/pyramid-flow-sd3", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
 
-    model_dtype = "bf16"
+    # model_dtype = "bf16"
+    model_dtype = "float32"
     model = PyramidDiTForVideoGeneration(
         model_path,
         model_dtype,
@@ -50,20 +51,22 @@ def generate_video(prompt, img_path, path, fps=8):
         # with torch.no_grad(), torch.autocast("mps", dtype=torch_dtype):
         with torch.no_grad(), torch.autocast(model.device.type, dtype=torch_dtype):
             video = model.generate(
-            prompt=prompt,
-            num_inference_steps=[20, 20, 20],
-            video_num_inference_steps=[10, 10, 10],
-            height=768,
-            width=1280,
-            temp=16,                    # temp=16: 5s, temp=31: 10s
-            guidance_scale=9.0,         # The guidance for the first frame
-            video_guidance_scale=5.0,   # The guidance for the other video latent
-            output_type="pil",
-            save_memory=True,
-        )
+                prompt=prompt,
+                num_inference_steps=[20, 20, 20],
+                video_num_inference_steps=[10, 10, 10],
+                # height=768, # 768p
+                height=384,  # 384p
+                # width=1280, # 768p
+                width=640,  # 384p
+                temp=16,  # temp=16: 5s, temp=31: 10s
+                guidance_scale=9.0,  # The guidance for the first frame
+                video_guidance_scale=5.0,  # The guidance for the other video latent
+                output_type="pil",
+                save_memory=True,
+            )
     else:
-        img = (Image.open(img_path).convert("RGB").resize((1280, 768)))
-        # with torch.no_grad(), torch.autocast("mps", dtype=torch_dtype):
+        # img = (Image.open(img_path).convert("RGB").resize((1280, 768)))
+        img = Image.open(img_path).convert("RGB").resize((640, 384))
         with torch.no_grad(), torch.autocast(model.device.type, dtype=torch_dtype):
             video = model.generate_i2v(
             prompt=prompt,
