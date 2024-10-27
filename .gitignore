@@ -3,3 +3,7 @@
 *.jpg
 
 last_frame.py
+
+.venv
+
+PyramidFlowModel
