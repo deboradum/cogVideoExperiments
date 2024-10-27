@@ -4,3 +4,4 @@ opencv_python==4.8.1.78
 opencv_python_headless==4.9.0.80
 torch==2.2.1
 transformers==4.39.3
+openai==1.52.2
