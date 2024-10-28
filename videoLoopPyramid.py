@@ -1,5 +1,6 @@
 import argparse
 import cv2
+import re
 import os
 import torch
 
@@ -8,14 +9,19 @@ from diffusers.utils import load_image, export_to_video
 from moviepy.editor import VideoFileClip, concatenate_videoclips
 from openai import OpenAI
 
-from Pyramid_Flow.pyramid_dit import PyramidDiTForVideoGeneration
+from pyramid_dit import PyramidDiTForVideoGeneration
 
 from huggingface_hub import snapshot_download
 
 
 def get_model(quantized):
-    model_path = 'pyramidFLowModel'
-    snapshot_download("rain1011/pyramid-flow-sd3", local_dir=model_path, local_dir_use_symlinks=False, repo_type='model')
+    model_path = "pyramidFLowModel"
+    snapshot_download(
+        "rain1011/pyramid-flow-sd3",
+        local_dir=model_path,
+        local_dir_use_symlinks=False,
+        repo_type="model",
+    )
 
     model_dtype = "bf16"
     model = PyramidDiTForVideoGeneration(
@@ -48,29 +54,32 @@ def generate_video(prompt, img_path, path, fps=8):
     if img_path is None:
         with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=torch_dtype):
             video = model.generate(
-            prompt=prompt,
-            num_inference_steps=[20, 20, 20],
-            video_num_inference_steps=[10, 10, 10],
-            height=768,
-            width=1280,
-            temp=16,                    # temp=16: 5s, temp=31: 10s
-            guidance_scale=9.0,         # The guidance for the first frame
-            video_guidance_scale=5.0,   # The guidance for the other video latent
-            output_type="pil",
-            save_memory=True,
-        )
+                prompt=prompt,
+                num_inference_steps=[20, 20, 20],
+                video_num_inference_steps=[10, 10, 10],
+                # height=768, # 768p
+                height=384,  # 384p
+                # width=1280, # 768p
+                width=640,  # 384p
+                temp=16,  # temp=16: 5s, temp=31: 10s
+                guidance_scale=9.0,  # The guidance for the first frame
+                video_guidance_scale=5.0,  # The guidance for the other video latent
+                output_type="pil",
+                save_memory=True,
+            )
     else:
-        img = (Image.open(img_path).convert("RGB").resize((1280, 768)))
+        # img = (Image.open(img_path).convert("RGB").resize((1280, 768)))
+        img = Image.open(img_path).convert("RGB").resize((640, 384))
         with torch.no_grad(), torch.cuda.amp.autocast(enabled=True, dtype=torch_dtype):
             video = model.generate_i2v(
-            prompt=prompt,
-            input_image=img,
-            num_inference_steps=[10, 10, 10],
-            temp=16,
-            video_guidance_scale=4.0,
-            output_type="pil",
-            save_memory=True,
-        )
+                prompt=prompt,
+                input_image=img,
+                num_inference_steps=[10, 10, 10],
+                temp=16,
+                video_guidance_scale=4.0,
+                output_type="pil",
+                save_memory=True,
+            )
     export_to_video(video, path, fps=fps)
 
 
@@ -117,6 +126,20 @@ def generate_new_prompt(prompt_progression):
     return new_prompt
 
 
+def find_newest_vid(directory):
+    highest_number = -1
+    pattern = re.compile(r"^(\d+)\.(mp4|jpg)$")
+
+    for filename in os.listdir(directory):
+        match = pattern.match(filename)
+        if match:
+            number = int(match.group(1))  # Extract the number part
+            if number > highest_number:
+                highest_number = number
+
+    return highest_number + 1
+
+
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("prompt", type=str, help="The text prompt for video generation")
@@ -139,8 +162,15 @@ if __name__ == "__main__":
     video_paths = []
     prompt_progression = []
     prompt = args.prompt
+
+    start = find_newest_vid(args.directory)
+    print(f"Start is {start}")
     last_frame_path = None
-    for i in range(int(args.loop_size)):
+    potential_frame_path = f"{args.directory}/{start-1}.jpg"
+    if os.path.isfile(potential_frame_path):
+        last_frame_path = potential_frame_path
+
+    for i in range(start, start + int(args.loop_size)):
         video_path = f"{args.directory}/{i}.mp4"
         video_paths.append(video_path)
 
